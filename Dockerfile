@@ -1,7 +1,7 @@
 FROM node:24-alpine AS web
 WORKDIR /src/frontend
 COPY frontend/package*.json ./
-RUN npm install --ignore-scripts
+RUN npm ci --ignore-scripts
 COPY frontend/ ./
 RUN npm run typecheck && npm run build
 FROM golang:1.26-alpine AS api

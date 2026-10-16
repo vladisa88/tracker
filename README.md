@@ -35,7 +35,7 @@ docker compose -f compose.test.yaml up -d --wait
 export TEST_DATABASE_URL='postgres://tracking:test-only@127.0.0.1:55432/tracking_test?sslmode=disable'
 (cd backend && go test ./internal/app -run TestOwnerLoginSessionAndLogout -v)
 (cd backend && go vet ./...)
-(cd frontend && npm install --ignore-scripts && npm run typecheck && npm run build)
+(cd frontend && npm ci --ignore-scripts && npm run typecheck && npm run build)
 (cd frontend && npx playwright install chromium && npm run test:e2e)
 ```
 
@@ -43,6 +43,6 @@ export TEST_DATABASE_URL='postgres://tracking:test-only@127.0.0.1:55432/tracking
 
 Для будущих API-маршрутов добавляйте обработчики внутрь защищённой диспетчеризации `Server.ServeHTTP`. `GET /api/session` возвращает `owner.telegramId` (строка) и `csrfToken`. Изменяющие запросы должны отправлять заголовок `X-CSRF-Token`; Origin должен совпадать с `APP_ORIGIN`. Выход: `POST /api/logout`, ответ 204. Cookie — HttpOnly, SameSite=Lax, с ограниченным сроком; ответы API не кешируются. Telegram настроен на RS256 по умолчанию: другие алгоритмы намеренно отклоняются. Client Secret, access token и ID token не возвращаются клиенту и не журналируются.
 
-## Git в ограниченной среде
+## Git
 
-Среда реализации запрещает запись в `.git`, поэтому метаданные размещены в `.git-storage` в этой же папке. Команды выполняются с `GIT_DIR=.git-storage GIT_WORK_TREE=.`. В обычной среде можно перенести `.git-storage` в `.git`, после чего Git работает стандартно. Каталог метаданных исключён из Docker context и индекса.
+Проект использует обычный Git-репозиторий в `.git`. История первоначальной реализации перенесена из временного `.git-storage`; стандартные команды `git status`, `git log` и `git commit` работают без дополнительных переменных.
