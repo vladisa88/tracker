@@ -20,8 +20,21 @@ services:
       APP_ORIGIN: ${APP_ORIGIN:?Set APP_ORIGIN}
       DATABASE_URL: postgres://tracking:${POSTGRES_PASSWORD}@db:5432/tracking?sslmode=disable
       OWNER_TELEGRAM_ID: ${OWNER_TELEGRAM_ID:?Set OWNER_TELEGRAM_ID}
+      TELEGRAM_BOT_USERNAME: ${TELEGRAM_BOT_USERNAME:?Set TELEGRAM_BOT_USERNAME}
       TELEGRAM_CLIENT_ID: ${TELEGRAM_CLIENT_ID:?Set TELEGRAM_CLIENT_ID}
       TELEGRAM_CLIENT_SECRET: ${TELEGRAM_CLIENT_SECRET:?Set TELEGRAM_CLIENT_SECRET}
+    depends_on:
+      db:
+        condition: service_healthy
+  bot:
+    build: .
+    entrypoint: [/bot]
+    restart: unless-stopped
+    environment:
+      DATABASE_URL: postgres://tracking:${POSTGRES_PASSWORD}@db:5432/tracking?sslmode=disable
+      OWNER_TELEGRAM_ID: ${OWNER_TELEGRAM_ID:?Set OWNER_TELEGRAM_ID}
+      TELEGRAM_BOT_USERNAME: ${TELEGRAM_BOT_USERNAME:?Set TELEGRAM_BOT_USERNAME}
+      TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN:?Set TELEGRAM_BOT_TOKEN}
     depends_on:
       db:
         condition: service_healthy

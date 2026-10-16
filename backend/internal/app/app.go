@@ -76,7 +76,7 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			return
 		case "/health/ready":
 			var version int
-			if s.db == nil || s.db.QueryRowContext(ctx, `SELECT COALESCE(MAX(version),0) FROM schema_migrations`).Scan(&version) != nil || version != schemaVersion {
+			if s.db == nil || s.db.QueryRowContext(ctx, `SELECT COALESCE(MAX(version),0) FROM schema_migrations`).Scan(&version) != nil || version != schemaVersion || !botSchemaReady(ctx, s.db) {
 				fail(w, 503, "not_ready", "Приложение пока не готово")
 				return
 			}
@@ -117,6 +117,9 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			return
 		case r.URL.Path == "/api/subscriptions" && (r.Method == "GET" || r.Method == "POST"):
 			s.subscriptions(w, r)
+			return
+		case r.Method == "GET" && r.URL.Path == "/api/telegram/connection":
+			s.botConnection(w, r)
 			return
 		case r.Method == "GET" && r.URL.Path == "/api/session":
 			w.Header().Set("Content-Type", "application/json; charset=utf-8")

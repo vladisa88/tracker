@@ -4,6 +4,7 @@ import (
 	"errors"
 	"net/url"
 	"os"
+	"regexp"
 	"strconv"
 	"strings"
 )
@@ -11,6 +12,7 @@ import (
 type Config struct {
 	Origin, DatabaseURL, ClientID, ClientSecret, StaticDir string
 	OwnerID                                                int64
+	BotUsername, BotToken                                  string
 }
 
 func LoadConfig() (Config, error) {
@@ -25,6 +27,22 @@ func LoadConfig() (Config, error) {
 	}
 	if c.StaticDir == "" {
 		c.StaticDir = "frontend/dist"
+	}
+	c.BotUsername = os.Getenv("TELEGRAM_BOT_USERNAME")
+	if !botUsernamePattern.MatchString(c.BotUsername) {
+		return c, errors.New("TELEGRAM_BOT_USERNAME must be a bot username without @")
+	}
+	return c, nil
+}
+
+var botUsernamePattern = regexp.MustCompile(`(?i)^[a-z][a-z0-9_]{1,28}bot$`)
+var botTokenPattern = regexp.MustCompile(`^[0-9]+:[A-Za-z0-9_-]+$`)
+
+func LoadBotConfig() (Config, error) {
+	c := Config{DatabaseURL: os.Getenv("DATABASE_URL"), BotUsername: os.Getenv("TELEGRAM_BOT_USERNAME"), BotToken: os.Getenv("TELEGRAM_BOT_TOKEN")}
+	c.OwnerID, _ = strconv.ParseInt(os.Getenv("OWNER_TELEGRAM_ID"), 10, 64)
+	if c.DatabaseURL == "" || c.OwnerID <= 0 || !botUsernamePattern.MatchString(c.BotUsername) || !botTokenPattern.MatchString(c.BotToken) {
+		return c, errors.New("DATABASE_URL, positive OWNER_TELEGRAM_ID, TELEGRAM_BOT_USERNAME and TELEGRAM_BOT_TOKEN are required")
 	}
 	return c, nil
 }

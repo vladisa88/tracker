@@ -9,10 +9,11 @@ WORKDIR /src
 COPY backend/go.* ./
 RUN go mod download
 COPY backend/ ./
-RUN CGO_ENABLED=0 go build -trimpath -o /server ./cmd/server
+RUN CGO_ENABLED=0 go build -trimpath -o /server ./cmd/server && CGO_ENABLED=0 go build -trimpath -o /bot ./cmd/bot
 FROM alpine:3.23
 RUN apk add --no-cache ca-certificates && adduser -D -u 10001 app
 COPY --from=api /server /server
+COPY --from=api /bot /bot
 COPY --from=web /src/frontend/dist /web
 USER app
 ENV STATIC_DIR=/web

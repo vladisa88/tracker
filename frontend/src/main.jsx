@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import { createRoot } from 'react-dom/client';
 import './style.css';
+import { TelegramConnection } from './TelegramConnection';
 import { Subscriptions } from './Subscriptions';
 
 /** @typedef {{owner: {telegramId: string}, csrfToken: string}} Session */
@@ -42,6 +43,7 @@ function App() {
     <main>
       {loading ? <section className="panel" role="status"><p>Загружаем приложение…</p></section> : session ? <>
         <Subscriptions csrfToken={session.csrfToken} onExpired={() => setSession(null)}/>
+        <TelegramConnection/>
       </> : <div className="login-layout"><section><div className="eyebrow">ЧУТЬ МЕНЬШЕ ДЕРЖАТЬ В ГОЛОВЕ</div><h1>Регулярные расходы.<br/><span>Спокойные планы.</span></h1><p className="lead">Личное место для подписок и ожидаемых расходов.</p><div className="note"><span aria-hidden="true">↗</span><p>Планируйте заранее.<br/><span className="muted">Без учёта фактических списаний.</span></p></div></section>
         <section className="panel login"><div className="tag">ТОЛЬКО ДЛЯ ВЛАДЕЛЬЦА</div><h2>С возвращением</h2><p>Войдите через свой аккаунт Telegram, чтобы открыть приложение.</p><a className="primary" href="/api/auth/telegram/start">Войти через Telegram <span aria-hidden="true">↗</span></a><p className="fine">Доступ разрешён одному заранее указанному аккаунту.</p></section></div>}
       {error && <div className="error" role="alert"><p>{error}</p><button className="quiet" onClick={() => {setError(''); void refresh();}}>Повторить</button></div>}

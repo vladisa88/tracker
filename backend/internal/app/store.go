@@ -43,6 +43,8 @@ func Migrate(ctx context.Context, db *sql.DB) error {
 	if version > schemaVersion {
 		return ErrSchema
 	}
-
+	if err = migrateBot(ctx, tx); err != nil {
+		return err
+	}
 	return tx.Commit()
 }
