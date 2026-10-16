@@ -15,7 +15,7 @@ func migrateBot(ctx context.Context, tx *sql.Tx) error {
 	if err := tx.QueryRowContext(ctx, `SELECT COALESCE(MAX(version),0) FROM telegram_schema_migrations`).Scan(&version); err != nil {
 		return err
 	}
-	if version > 1 {
+	if version > 2 {
 		return ErrSchema
 	}
 	if version == 0 {
@@ -25,11 +25,17 @@ func migrateBot(ctx context.Context, tx *sql.Tx) error {
    status text NOT NULL DEFAULT 'disconnected' CHECK(status IN ('disconnected','checking','connected','error')),
    next_update_id bigint NOT NULL DEFAULT 0 CHECK(next_update_id>=0)
   ); INSERT INTO telegram_schema_migrations VALUES(1)`)
+		if err != nil {
+			return err
+		}
+	}
+	if version < 2 {
+		_, err := tx.ExecContext(ctx, `ALTER TABLE telegram_connections ADD COLUMN connection_revision bigint NOT NULL DEFAULT 0; INSERT INTO telegram_schema_migrations VALUES(2)`)
 		return err
 	}
 	return nil
 }
 func botSchemaReady(ctx context.Context, db *sql.DB) bool {
 	var version int
-	return db.QueryRowContext(ctx, `SELECT COALESCE(MAX(version),0) FROM telegram_schema_migrations`).Scan(&version) == nil && version == 1
+	return db.QueryRowContext(ctx, `SELECT COALESCE(MAX(version),0) FROM telegram_schema_migrations`).Scan(&version) == nil && version == 2
 }

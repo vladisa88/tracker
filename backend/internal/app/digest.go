@@ -13,7 +13,7 @@ import (
 
 // DigestWorker processes only the supplied Moscow business day. The durable
 // snapshot precedes the external send; committed successes and empty days stay
-// processed across restarts. Concurrent claims and failure recovery are issue 07.
+// processed across restarts. Row locks serialize sends and release on a crash.
 type DigestWorker struct {
 	db       *sql.DB
 	config   Config
@@ -25,6 +25,7 @@ func NewDigestWorker(db *sql.DB, c Config, telegram BotAPI) *DigestWorker {
 }
 
 func (w *DigestWorker) Cycle(ctx context.Context, now time.Time) error {
+	started := time.Now()
 	local := now.In(schedule.Moscow)
 	if local.Hour() < 10 {
 		return nil
@@ -40,8 +41,8 @@ func (w *DigestWorker) Cycle(ctx context.Context, now time.Time) error {
 		return nil
 	}
 	// A saved snapshot never grants permission to send to a disconnected bot.
-	var recipient int64
-	connectionErr := w.db.QueryRowContext(ctx, `SELECT chat_id FROM telegram_connections WHERE owner_id=$1 AND status='connected' AND chat_id IS NOT NULL`, w.config.OwnerID).Scan(&recipient)
+	var recipient, connectionRevision int64
+	connectionErr := w.db.QueryRowContext(ctx, `SELECT chat_id,connection_revision FROM telegram_connections WHERE owner_id=$1 AND status='connected' AND chat_id IS NOT NULL`, w.config.OwnerID).Scan(&recipient, &connectionRevision)
 	if errors.Is(connectionErr, sql.ErrNoRows) {
 		return nil
 	}
@@ -73,11 +74,73 @@ func (w *DigestWorker) Cycle(ctx context.Context, now time.Time) error {
 			return nil
 		}
 	}
-	if err := w.telegram.Send(ctx, chat, message); err != nil {
+	// Bound the whole claim to the remaining business day and a short send
+	// window. A stalled sender cannot retain a transaction indefinitely.
+	midnight := time.Date(local.Year(), local.Month(), local.Day()+1, 0, 0, 0, 0, schedule.Moscow)
+	remaining := midnight.Sub(local) - time.Since(started)
+	if remaining <= 0 {
+		return nil
+	}
+	timeout := 35 * time.Second
+	if remaining < timeout {
+		timeout = remaining
+	}
+	sendCtx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+	claimCtx, release := context.WithTimeout(ctx, 45*time.Second)
+	defer release()
+	tx, err := w.db.BeginTx(claimCtx, nil)
+	if err != nil {
 		return err
 	}
-	_, err = w.db.ExecContext(ctx, `UPDATE daily_digests SET status='sent',sent_at=$2 WHERE business_date=$1`, date, now)
-	return err
+	defer tx.Rollback()
+	var attempts int
+	// SKIP LOCKED lets a second worker leave immediately. The lock covers
+	// Telegram and the result commit, without a lease that a slow sender can outlive.
+	err = tx.QueryRowContext(claimCtx, `SELECT chat_id,message,attempts FROM daily_digests
+ WHERE business_date=$1 AND status='pending' AND (next_attempt_at IS NULL OR next_attempt_at <= $2)
+ FOR UPDATE SKIP LOCKED`, date, now).Scan(&chat, &message, &attempts)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	if sendCtx.Err() != nil {
+		return sendCtx.Err()
+	}
+	sendErr := w.telegram.Send(sendCtx, chat, message)
+	if sendErr != nil {
+		var permanent *BotError
+		if errors.As(sendErr, &permanent) && permanent.Permanent {
+			// Do not overwrite a newer /start check completed during this send.
+			_, err = tx.ExecContext(claimCtx, `UPDATE telegram_connections SET status='error' WHERE owner_id=$1 AND chat_id=$2 AND connection_revision=$3 AND status='connected'`, w.config.OwnerID, recipient, connectionRevision)
+			if err != nil {
+				return err
+			}
+		}
+		delay := time.Minute
+		for i := 0; i < attempts && delay < time.Hour; i++ {
+			delay *= 2
+			if delay > time.Hour {
+				delay = time.Hour
+			}
+		}
+		var failure *BotError
+		if errors.As(sendErr, &failure) && failure.RetryAfter > delay {
+			delay = failure.RetryAfter
+		}
+		_, err = tx.ExecContext(claimCtx, `UPDATE daily_digests SET attempts=attempts+1,next_attempt_at=$2 WHERE business_date=$1`, date, now.Add(time.Since(started)).Add(delay))
+	} else {
+		_, err = tx.ExecContext(claimCtx, `UPDATE daily_digests SET status='sent',sent_at=$2,next_attempt_at=NULL WHERE business_date=$1`, date, now.Add(time.Since(started)))
+	}
+	if err != nil {
+		return err
+	}
+	if err = tx.Commit(); err != nil {
+		return err
+	}
+	return sendErr
 }
 
 // Telegram receives plain text (no parse_mode), so subscription names are

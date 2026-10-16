@@ -155,7 +155,7 @@ func (b *BotWorker) Poll(ctx context.Context) error {
 					status = "checking"
 				}
 			}
-			if _, err = tx.ExecContext(ctx, `UPDATE telegram_connections SET chat_id=$2,status=$3 WHERE owner_id=$1`, b.config.OwnerID, m.Chat.ID, status); err != nil {
+			if _, err = tx.ExecContext(ctx, `UPDATE telegram_connections SET chat_id=$2,status=$3,connection_revision=connection_revision+1 WHERE owner_id=$1`, b.config.OwnerID, m.Chat.ID, status); err != nil {
 				return err
 			}
 			if status == "checking" {

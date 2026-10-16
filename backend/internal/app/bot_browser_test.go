@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 	"tracking/internal/app"
+	schedule "tracking/internal/subscriptions"
 )
 
 // All controls live exclusively in this test binary; no production bypass.
@@ -41,6 +42,24 @@ func TestBotBrowserFixture(t *testing.T) {
 		switch r.URL.Path {
 		case "/test-login":
 			fmt.Fprintf(w, `<a href="/api/auth/telegram/callback?code=owner&state=%s">Владелец</a>`, url.QueryEscape(r.URL.Query().Get("state")))
+		case "/test-digest":
+			local := time.Now().In(schedule.Moscow)
+			at := time.Date(local.Year(), local.Month(), local.Day(), 14, 0, 0, 0, schedule.Moscow)
+			// Browser scenarios run serially against one owner's subscriptions. Reset
+			// only the test day's journal so each viewport exercises its own delivery.
+			if _, err := db.Exec(`DELETE FROM daily_digests WHERE business_date=$1`, schedule.Today(at)); err != nil {
+				t.Error(err)
+				http.Error(w, "fixture reset failed", 500)
+				return
+			}
+			f := &digestTransport{t: t, response: `{"ok":false,"error_code":403}`}
+			telegram := app.NewBot(cfg)
+			telegram.Client = &http.Client{Transport: roundTrip(f.transport)}
+			if err := app.NewDigestWorker(db, cfg, telegram).Cycle(context.Background(), at); err == nil {
+				http.Error(w, "expected delivery failure", 500)
+				return
+			}
+			w.WriteHeader(204)
 		case "/test-bot":
 			f := &botFixture{t: t, update: fmt.Sprintf(`{"update_id":%d,"message":{"from":{"id":%d},"chat":{"id":%d,"type":"private"},"text":"/start"}}`, atomic.AddInt64(&sequence, 1), owner, owner)}
 			if r.URL.Query().Get("mode") == "error" {

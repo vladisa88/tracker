@@ -15,7 +15,10 @@ var subscriptionsSchema string
 //go:embed digest.sql
 var digestSchema string
 
-const schemaVersion = 3
+//go:embed digest_retries.sql
+var digestRetriesSchema string
+
+const schemaVersion = 4
 
 func Migrate(ctx context.Context, db *sql.DB) error {
 	tx, err := db.BeginTx(ctx, nil)
@@ -45,6 +48,11 @@ func Migrate(ctx context.Context, db *sql.DB) error {
 	}
 	if version < 3 {
 		if _, err = tx.ExecContext(ctx, digestSchema); err != nil {
+			return err
+		}
+	}
+	if version < 4 {
+		if _, err = tx.ExecContext(ctx, digestRetriesSchema); err != nil {
 			return err
 		}
 	}

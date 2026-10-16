@@ -47,16 +47,20 @@ func digestScenario(t *testing.T) (*subscriptionAPI, *app.Bot, *digestTransport)
 type digestTransport struct {
 	t          *testing.T
 	connect    bool
+	updateID   int64
 	messages   []string
 	recipients []int64
 	failure    bool
+	response   string
+	onSend     func(*http.Request) error
 }
 
 func (f *digestTransport) transport(r *http.Request) (*http.Response, error) {
 	f.t.Helper()
 	result := `{"ok":true,"result":[]}`
 	if strings.HasSuffix(r.URL.Path, "/getUpdates") && f.connect {
-		result = `{"ok":true,"result":[{"update_id":1,"message":{"from":{"id":42},"chat":{"id":777006,"type":"private"},"text":"/start"}}]}`
+		f.updateID++
+		result = fmt.Sprintf(`{"ok":true,"result":[{"update_id":%d,"message":{"from":{"id":42},"chat":{"id":777006,"type":"private"},"text":"/start"}}]}`, f.updateID)
 	} else if strings.HasSuffix(r.URL.Path, "/sendMessage") {
 		var body struct {
 			ChatID    int64 `json:"chat_id"`
@@ -74,7 +78,15 @@ func (f *digestTransport) transport(r *http.Request) (*http.Response, error) {
 		if f.failure {
 			return nil, fmt.Errorf("simulated transport failure")
 		}
+		if f.onSend != nil {
+			if err := f.onSend(r); err != nil {
+				return nil, err
+			}
+		}
 		result = `{"ok":true,"result":{"message_id":10}}`
+		if f.response != "" {
+			result = f.response
+		}
 	}
 	return &http.Response{StatusCode: 200, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(result))}, nil
 }
@@ -223,5 +235,244 @@ func TestDigestSnapshotSurvivesUnconfirmedAttempt(t *testing.T) {
 	runDigest(t, a, bot, "2028-02-29T12:00:00Z")
 	if len(f.messages) != 2 {
 		t.Fatal("confirmed send repeated")
+	}
+}
+
+func TestDigestRetryDelaySurvivesRestart(t *testing.T) {
+	a, bot, f := digestScenario(t)
+	connectDigest(t, a, bot, f)
+	createDigestSubscription(a, "Повтор", "2028-02-29")
+	f.failure = true
+	at := time.Date(2028, 2, 29, 7, 0, 0, 0, time.UTC)
+	if err := app.NewDigestWorker(testDB(t), a.config, bot).Cycle(context.Background(), at); err == nil {
+		t.Fatal("expected uncertain failure")
+	}
+	f.failure = false
+	runDigest(t, a, bot, "2028-02-29T07:00:59Z")
+	if len(f.messages) != 1 {
+		t.Fatal("retry ignored durable delay")
+	}
+	runDigest(t, a, bot, "2028-02-29T07:01:01Z")
+	if len(f.messages) != 2 || f.messages[0] != f.messages[1] {
+		t.Fatal("retry lost frozen content")
+	}
+}
+
+func TestDigestPermanentFailureAndStartRecovery(t *testing.T) {
+	a, bot, f := digestScenario(t)
+	connectDigest(t, a, bot, f)
+	createDigestSubscription(a, "Доступный учёт", "2028-02-29")
+	f.response = `{"ok":false,"error_code":403}`
+	at := time.Date(2028, 2, 29, 7, 0, 0, 0, time.UTC)
+	if err := app.NewDigestWorker(testDB(t), a.config, bot).Cycle(context.Background(), at); err == nil {
+		t.Fatal("expected rejection")
+	}
+	if body := string(a.request("GET", "/api/telegram/connection", "", 200)); !strings.Contains(body, `"status":"error"`) {
+		t.Fatalf("delivery failure invisible: %s", body)
+	}
+	createDigestSubscription(a, "Можно добавлять", "2028-02-29")
+	runDigest(t, a, bot, "2028-02-29T14:00:00Z")
+	if len(f.messages) != 1 {
+		t.Fatal("retried permanent failure without reconnect")
+	}
+	f.response = ""
+	connectDigest(t, a, bot, f)
+	runDigest(t, a, bot, "2028-02-29T14:01:00Z")
+	if len(f.messages) != 1 || !strings.Contains(f.messages[0], "Доступный учёт") || strings.Contains(f.messages[0], "Можно добавлять") {
+		t.Fatal("reconnection did not resume frozen digest")
+	}
+	if body := string(a.request("GET", "/api/telegram/connection", "", 200)); !strings.Contains(body, `"status":"connected"`) {
+		t.Fatal("start did not restore status")
+	}
+}
+
+func TestDigestRateLimitAndBackoff(t *testing.T) {
+	a, bot, f := digestScenario(t)
+	connectDigest(t, a, bot, f)
+	createDigestSubscription(a, "Лимит", "2028-02-29")
+	f.response = `{"ok":false,"error_code":429,"parameters":{"retry_after":300}}`
+	at := time.Date(2028, 2, 29, 7, 0, 0, 0, time.UTC)
+	if err := app.NewDigestWorker(testDB(t), a.config, bot).Cycle(context.Background(), at); err == nil {
+		t.Fatal("expected rate limit")
+	}
+	runDigest(t, a, bot, "2028-02-29T07:04:59Z")
+	if len(f.messages) != 1 {
+		t.Fatal("ignored Telegram retry_after")
+	}
+	f.response = `{"ok":false,"error_code":502}`
+	if err := app.NewDigestWorker(testDB(t), a.config, bot).Cycle(context.Background(), at.Add(5*time.Minute+time.Second)); err == nil {
+		t.Fatal("expected temporary server failure")
+	}
+	f.response = ""
+	runDigest(t, a, bot, "2028-02-29T07:06:59Z")
+	if len(f.messages) != 2 {
+		t.Fatal("backoff not increased")
+	}
+	runDigest(t, a, bot, "2028-02-29T07:07:02Z")
+	if len(f.messages) != 3 {
+		t.Fatal("retry not resumed")
+	}
+}
+
+func TestDigestTwoWorkersAndCrashRecovery(t *testing.T) {
+	for _, crash := range []bool{false, true} {
+		t.Run(fmt.Sprintf("crash=%v", crash), func(t *testing.T) {
+			a, bot, f := digestScenario(t)
+			connectDigest(t, a, bot, f)
+			createDigestSubscription(a, "Один исполнитель", "2028-02-29")
+			db := testDB(t)
+			db.SetMaxOpenConns(1)
+			var pid int
+			if err := db.QueryRow(`SELECT pg_backend_pid()`).Scan(&pid); err != nil {
+				t.Fatal(err)
+			}
+			entered, release := make(chan struct{}), make(chan struct{})
+			f.onSend = func(r *http.Request) error { close(entered); <-release; return nil }
+			at := time.Date(2028, 2, 29, 7, 0, 0, 0, time.UTC)
+			result := make(chan error, 1)
+			go func() { result <- app.NewDigestWorker(db, a.config, bot).Cycle(context.Background(), at) }()
+			select {
+			case <-entered:
+			case <-time.After(5 * time.Second):
+				t.Fatal("send did not start")
+			}
+			// A distinct Telegram transport detects any ordinary simultaneous send.
+			other := &digestTransport{t: t}
+			otherBot := app.NewBot(a.config)
+			otherBot.Client = &http.Client{Transport: roundTrip(other.transport)}
+			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+			err := app.NewDigestWorker(testDB(t), a.config, otherBot).Cycle(ctx, at)
+			cancel()
+			if err != nil || len(other.messages) != 0 {
+				close(release)
+				t.Fatalf("second worker did not skip claim: %v %v", err, other.messages)
+			}
+			if crash {
+				// Terminate the owning DB session while Telegram may already have accepted.
+				if _, err := testDB(t).Exec(`SELECT pg_terminate_backend($1)`, pid); err != nil {
+					close(release)
+					t.Fatal(err)
+				}
+			}
+			close(release)
+			err = <-result
+			if crash && err == nil {
+				t.Fatal("lost database connection should leave an uncertain send")
+			}
+			if !crash && err != nil {
+				t.Fatal(err)
+			}
+			f.onSend = nil
+			runDigest(t, a, bot, "2028-02-29T07:01:01Z")
+			want := 1
+			if crash {
+				want = 2
+			}
+			if len(f.messages) != want {
+				t.Fatalf("claim recovery: %v", f.messages)
+			}
+			runDigest(t, a, bot, "2028-02-29T07:02:00Z")
+			if len(f.messages) != want {
+				t.Fatal("recovered claim remained stuck or resent success")
+			}
+		})
+	}
+}
+
+func TestDigestLateDeliveryMidnightAndLongOutage(t *testing.T) {
+	a, bot, f := digestScenario(t)
+	connectDigest(t, a, bot, f)
+	createDigestSubscription(a, "Текущий платёж", "2028-02-29")
+	runDigest(t, a, bot, "2028-02-29T14:00:00+03:00")
+	if len(f.messages) != 1 {
+		t.Fatal("missed 10:00 was not delivered at 14:00")
+	}
+	// Another due date leaves an uncertain attempt just before midnight.
+	createDigestSubscription(a, "Завтра", "2028-03-01")
+	f.failure = true
+	at := time.Date(2028, 3, 1, 20, 59, 59, 0, time.UTC)
+	if err := app.NewDigestWorker(testDB(t), a.config, bot).Cycle(context.Background(), at); err == nil {
+		t.Fatal("expected failure")
+	}
+	f.failure = false
+	runDigest(t, a, bot, "2028-03-01T21:00:00Z")
+	runDigest(t, a, bot, "2028-03-02T06:59:59Z")
+	if len(f.messages) != 2 {
+		t.Fatal("yesterday retried after midnight")
+	}
+	runDigest(t, a, bot, "2028-03-02T07:00:00Z")
+	if len(f.messages) != 2 {
+		t.Fatal("stale payment sent on empty new day")
+	}
+	runDigest(t, a, bot, "2028-05-29T11:00:00Z")
+	if len(f.messages) != 3 || !strings.Contains(f.messages[2], "2028-05-29") || strings.Contains(f.messages[2], "2028-03-01") {
+		t.Fatalf("outage replayed history: %v", f.messages)
+	}
+}
+
+func TestDigestTimeoutWithUnknownResult(t *testing.T) {
+	a, bot, f := digestScenario(t)
+	connectDigest(t, a, bot, f)
+	createDigestSubscription(a, "Неизвестный результат", "2028-02-29")
+	// Telegram sees the message, but its acknowledgement never reaches the client.
+	f.onSend = func(r *http.Request) error { <-r.Context().Done(); return r.Context().Err() }
+	bot.Client.Timeout = 20 * time.Millisecond
+	at := time.Date(2028, 2, 29, 7, 0, 0, 0, time.UTC)
+	if err := app.NewDigestWorker(testDB(t), a.config, bot).Cycle(context.Background(), at); err == nil {
+		t.Fatal("expected timeout")
+	}
+	f.onSend = nil
+	bot.Client.Timeout = 0
+	runDigest(t, a, bot, "2028-02-29T07:00:59Z")
+	if len(f.messages) != 1 {
+		t.Fatal("timeout retry ignored delay")
+	}
+	runDigest(t, a, bot, "2028-02-29T07:01:01Z")
+	if len(f.messages) != 2 || f.messages[0] != f.messages[1] {
+		t.Fatal("uncertain result did not retry frozen message")
+	}
+}
+
+func TestDigestInFlightSendStopsAtMidnight(t *testing.T) {
+	a, bot, f := digestScenario(t)
+	connectDigest(t, a, bot, f)
+	createDigestSubscription(a, "До полуночи", "2028-02-29")
+	f.onSend = func(r *http.Request) error {
+		deadline, ok := r.Context().Deadline()
+		if !ok || time.Until(deadline) > time.Second {
+			t.Error("send is not bounded by Moscow midnight")
+		}
+		<-r.Context().Done()
+		return r.Context().Err()
+	}
+	at := time.Date(2028, 2, 29, 20, 59, 59, 900000000, time.UTC)
+	if err := app.NewDigestWorker(testDB(t), a.config, bot).Cycle(context.Background(), at); err == nil {
+		t.Fatal("expected cutoff")
+	}
+	f.onSend = nil
+	runDigest(t, a, bot, "2028-02-29T21:00:00Z")
+	runDigest(t, a, bot, "2028-03-01T07:00:00Z")
+	if len(f.messages) != 1 {
+		t.Fatal("expired message was resent")
+	}
+}
+
+func TestDigestOldFailureDoesNotUndoNewStart(t *testing.T) {
+	a, bot, f := digestScenario(t)
+	connectDigest(t, a, bot, f)
+	createDigestSubscription(a, "Проверка восстановления", "2028-02-29")
+	f.response = `{"ok":false,"error_code":403}`
+	f.onSend = func(r *http.Request) error {
+		recovered := &botFixture{t: t, update: `{"update_id":2,"message":{"from":{"id":42},"chat":{"id":777006,"type":"private"},"text":"/start"}}`}
+		other := app.NewBot(a.config)
+		other.Client = &http.Client{Transport: roundTrip(recovered.transport)}
+		return app.NewBotWorker(testDB(t), a.config, other).Poll(context.Background())
+	}
+	at := time.Date(2028, 2, 29, 7, 0, 0, 0, time.UTC)
+	if err := app.NewDigestWorker(testDB(t), a.config, bot).Cycle(context.Background(), at); err == nil {
+		t.Fatal("expected old send rejection")
+	}
+	if body := string(a.request("GET", "/api/telegram/connection", "", 200)); !strings.Contains(body, `"status":"connected"`) {
+		t.Fatal("old failure overwrote new start")
 	}
 }
