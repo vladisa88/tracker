@@ -9,6 +9,11 @@ import (
 //go:embed schema.sql
 var schema string
 
+//go:embed subscriptions.sql
+var subscriptionsSchema string
+
+const schemaVersion = 2
+
 func Migrate(ctx context.Context, db *sql.DB) error {
 	tx, err := db.BeginTx(ctx, nil)
 	if err != nil {
@@ -30,8 +35,14 @@ func Migrate(ctx context.Context, db *sql.DB) error {
 			return err
 		}
 	}
-	if version > 1 {
+	if version < 2 {
+		if _, err = tx.ExecContext(ctx, subscriptionsSchema); err != nil {
+			return err
+		}
+	}
+	if version > schemaVersion {
 		return ErrSchema
 	}
+
 	return tx.Commit()
 }

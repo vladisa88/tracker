@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import { createRoot } from 'react-dom/client';
 import './style.css';
+import { Subscriptions } from './Subscriptions';
 
 /** @typedef {{owner: {telegramId: string}, csrfToken: string}} Session */
 function App() {
@@ -9,7 +10,6 @@ function App() {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState(new URLSearchParams(location.search).has('login') ? 'Вход не выполнен. Доступ разрешён только владельцу. Попробуйте снова.' : '');
   async function refresh() {
-    setLoading(true);
     try {
       const response = await fetch('/api/session');
       if (response.status === 401) setSession(null);
@@ -41,9 +41,7 @@ function App() {
     </header>
     <main>
       {loading ? <section className="panel" role="status"><p>Загружаем приложение…</p></section> : session ? <>
-        <div className="eyebrow">ЛИЧНОЕ ПРОСТРАНСТВО</div><h1>Всё важное —<br/>рядом.</h1>
-        <p className="lead">Здесь будут ваши подписки и плановые платежи.</p>
-        <section className="panel empty"><span className="empty-icon" aria-hidden="true">↗</span><h2>Начало положено</h2><p>Вы вошли как владелец. Учёт подписок появится на следующем этапе.</p><p className="muted">Вход через Telegram не подключает напоминания. Для них будет отдельный шаг.</p></section>
+        <Subscriptions csrfToken={session.csrfToken} onExpired={() => setSession(null)}/>
       </> : <div className="login-layout"><section><div className="eyebrow">ЧУТЬ МЕНЬШЕ ДЕРЖАТЬ В ГОЛОВЕ</div><h1>Регулярные расходы.<br/><span>Спокойные планы.</span></h1><p className="lead">Личное место для подписок и ожидаемых расходов.</p><div className="note"><span aria-hidden="true">↗</span><p>Планируйте заранее.<br/><span className="muted">Без учёта фактических списаний.</span></p></div></section>
         <section className="panel login"><div className="tag">ТОЛЬКО ДЛЯ ВЛАДЕЛЬЦА</div><h2>С возвращением</h2><p>Войдите через свой аккаунт Telegram, чтобы открыть приложение.</p><a className="primary" href="/api/auth/telegram/start">Войти через Telegram <span aria-hidden="true">↗</span></a><p className="fine">Доступ разрешён одному заранее указанному аккаунту.</p></section></div>}
       {error && <div className="error" role="alert"><p>{error}</p><button className="quiet" onClick={() => {setError(''); void refresh();}}>Повторить</button></div>}

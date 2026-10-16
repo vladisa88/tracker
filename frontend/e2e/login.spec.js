@@ -4,7 +4,7 @@ test('владелец входит, перезагружает страницу
   await page.goto('/');
   await page.getByRole('link', {name: 'Войти через Telegram'}).click();
   await page.getByRole('link', {name: 'Владелец', exact: true}).click();
-  await expect(page.getByRole('heading', {name: 'Начало положено'})).toBeVisible();
+  await expect(page.getByRole('heading', {name: 'Ближайшие платежи'})).toBeVisible();
   await page.reload();
   await expect(page.getByRole('button', {name: 'Выйти'})).toBeVisible();
   await expect(page.locator('body')).toHaveJSProperty('scrollWidth', await page.evaluate(() => document.body.clientWidth));
