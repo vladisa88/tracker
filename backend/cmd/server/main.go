@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"syscall"
 	"time"
 
@@ -18,6 +19,15 @@ func main() {
 	c, err := app.LoadConfig()
 	if err != nil {
 		log.Fatal(err)
+	}
+	index, err := os.Open(filepath.Join(c.StaticDir, "index.html"))
+	if err != nil {
+		log.Fatal("STATIC_DIR must contain a readable frontend build")
+	}
+	info, err := index.Stat()
+	index.Close()
+	if err != nil || !info.Mode().IsRegular() {
+		log.Fatal("STATIC_DIR must contain a readable frontend build")
 	}
 	db, err := sql.Open("postgres", c.DatabaseURL)
 	if err != nil {

@@ -105,7 +105,7 @@ func TestOwnerLoginSessionAndLogout(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	fixture := &telegramFixture{key: key, now: time.Date(2026, 10, 16, 12, 0, 0, 0, time.UTC), t: t}
+	fixture := &telegramFixture{key: key, now: time.Now().UTC().Truncate(time.Second), t: t}
 	cfg := app.Config{OwnerID: 42, ClientID: "client", ClientSecret: "secret"}
 	provider := app.NewTelegram(cfg)
 	provider.Client = &http.Client{Transport: roundTrip(fixture.transport)}
@@ -116,6 +116,8 @@ func TestOwnerLoginSessionAndLogout(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { active.Load().ServeHTTP(w, r) }))
 	defer server.Close()
 	cfg.Origin = server.URL
+	provider = app.NewTelegram(cfg)
+	provider.Client = &http.Client{Transport: roundTrip(fixture.transport)}
 	// The public origin is fixed before any request.
 	handler = app.New(db, cfg, provider)
 	handler.Now = func() time.Time { return fixture.now }
@@ -159,13 +161,20 @@ func TestOwnerLoginSessionAndLogout(t *testing.T) {
 	path := begin()
 	status(request("GET", path+"bad", "", ""), 403)
 	loginResponse := request("GET", path, "", "")
- status(loginResponse,303)
- var savedCookie *http.Cookie
- for _,cookie := range loginResponse.Cookies() {
-  if cookie.Name=="session" { savedCookie=cookie; if !cookie.HttpOnly || cookie.SameSite!=http.SameSiteLaxMode || cookie.MaxAge!=604800 { t.Fatal("unsafe session cookie") } }
- }
- if savedCookie==nil { t.Fatal("no session cookie") }
- res := request("GET", "/api/session", "", "")
+	status(loginResponse, 303)
+	var savedCookie *http.Cookie
+	for _, cookie := range loginResponse.Cookies() {
+		if cookie.Name == "session" {
+			savedCookie = cookie
+			if !cookie.HttpOnly || cookie.SameSite != http.SameSiteLaxMode || cookie.MaxAge != 604800 {
+				t.Fatal("unsafe session cookie")
+			}
+		}
+	}
+	if savedCookie == nil {
+		t.Fatal("no session cookie")
+	}
+	res := request("GET", "/api/session", "", "")
 	status(res, 200)
 	var session struct {
 		CSRF string `json:"csrfToken"`
@@ -186,11 +195,11 @@ func TestOwnerLoginSessionAndLogout(t *testing.T) {
 	status(request("GET", "/api/session", "", ""), 200)
 	status(request("POST", "/api/logout", session.CSRF, server.URL), 204)
 	status(request("GET", "/api/session", "", ""), 401)
- originURL,_:=url.Parse(server.URL)
- jar.SetCookies(originURL,[]*http.Cookie{savedCookie})
- status(request("GET", "/api/session", "", ""), 401)
- jar.SetCookies(originURL,[]*http.Cookie{{Name:"session",Value:"",Path:"/",MaxAge:-1}})
- for _, mode := range []string{"foreign", "expired", "nonce", "issuer", "audience", "missing-id", "missing-sub", "missing-iat", "future", "signature"} {
+	originURL, _ := url.Parse(server.URL)
+	jar.SetCookies(originURL, []*http.Cookie{savedCookie})
+	status(request("GET", "/api/session", "", ""), 401)
+	jar.SetCookies(originURL, []*http.Cookie{{Name: "session", Value: "", Path: "/", MaxAge: -1}})
+	for _, mode := range []string{"foreign", "expired", "nonce", "issuer", "audience", "missing-id", "missing-sub", "missing-iat", "future", "signature"} {
 		t.Run(mode, func(t *testing.T) {
 			fixture.mode = mode
 			path := begin()
@@ -211,9 +220,9 @@ func TestOwnerLoginSessionAndLogout(t *testing.T) {
 	fixture.now = fixture.now.Add(7 * 24 * time.Hour)
 	status(request("GET", "/api/session", "", ""), 401)
 	status(request("GET", "/health/ready", "", ""), 200)
- secondDB.Close()
- status(request("GET", "/health/ready", "", ""), 503)
- status(request("GET", "/health/live", "", ""), 200)
+	secondDB.Close()
+	status(request("GET", "/health/ready", "", ""), 503)
+	status(request("GET", "/health/live", "", ""), 200)
 }
 
 func TestBrowserFixture(t *testing.T) {
