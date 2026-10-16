@@ -1,5 +1,7 @@
 .git-storage/
 .env
+.env.backup
+__pycache__/
 node_modules/
 dist/
 playwright-report/

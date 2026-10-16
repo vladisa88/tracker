@@ -9,8 +9,9 @@
 1. `cp .env.example .env`
 2. В `.env` задайте случайный URL-safe пароль PostgreSQL, числовой Telegram ID владельца, Client ID и Client Secret из BotFather → Login Widget. Не используйте username или bot token вместо Client Secret. Для подключения бота отдельно задайте `TELEGRAM_BOT_USERNAME` без `@` и `TELEGRAM_BOT_TOKEN` из BotFather.
 3. В BotFather зарегистрируйте origin `http://localhost:8080` и callback `http://localhost:8080/api/auth/telegram/callback`. Если Telegram требует HTTPS для выбранного окружения, используйте HTTPS-домен с прокси и соответствующий `APP_ORIGIN`.
-4. `docker compose up --build -d`
-5. Откройте `http://localhost:8080`. API и собранный React обслуживаются одним Go-процессом с одного origin.
+4. `cp .env.backup.example .env.backup && chmod 600 .env.backup`; для production заполните внешнее S3-хранилище по [инструкции backup/restore](docs/backup-and-restore.md).
+5. `docker compose up --build -d`
+6. Откройте `http://localhost:8080`. API и собранный React обслуживаются одним Go-процессом с одного origin.
 
 `docker compose down` сохраняет базу в именованном volume. `down -v` удаляет данные. База не публикует порт в рабочем Compose. Приложение слушает только loopback хоста; HTTPS-прокси должен вести на `127.0.0.1:8080`. В HTTPS-окружении задайте HTTPS `APP_ORIGIN`: cookie автоматически получает Secure. Адрес не выводится из недоверенных forwarded-заголовков. Реальные секреты и домен нужны только для живого входа; автоматические тесты обходятся без них.
 

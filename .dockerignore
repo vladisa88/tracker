@@ -1,6 +1,7 @@
 .git
 .git-storage
 .env
+.env.backup
 **/node_modules
 **/dist
 .scratch

@@ -1,0 +1,35 @@
+services:
+  storage:
+    build:
+      context: ./ops/backup
+      dockerfile: Dockerfile.test
+  restore-db:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_DB: restored
+      POSTGRES_USER: tracking
+      POSTGRES_PASSWORD: test-only
+    ports:
+      - '127.0.0.1:55433:5432'
+    tmpfs:
+      - /var/lib/postgresql/data
+    healthcheck:
+      test: [CMD-SHELL, 'pg_isready -U tracking -d restored']
+      interval: 1s
+      timeout: 3s
+      retries: 30
+  backup-test:
+    build: ./ops/backup
+    environment:
+      DATABASE_URL: postgres://tracking:test-only@test-db:5432/tracking_test?sslmode=disable
+      RESTORE_DATABASE_URL: postgres://tracking:test-only@restore-db:5432/restored?sslmode=disable
+      BACKUP_BUCKET: tracking-test
+      BACKUP_PREFIX: integration/
+      BACKUP_ENDPOINT_URL: http://storage:9000
+      BACKUP_ALLOW_HTTP_TEST_ONLY: '1'
+      AWS_ACCESS_KEY_ID: test-access
+      AWS_SECRET_ACCESS_KEY: test-secret-only
+    volumes:
+      - backup-test-state:/state
+volumes:
+  backup-test-state:

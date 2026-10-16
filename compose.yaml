@@ -51,5 +51,19 @@ services:
     depends_on:
       db:
         condition: service_healthy
+  backup:
+    build: ./ops/backup
+    restart: unless-stopped
+    env_file: .env.backup
+    environment:
+      DATABASE_URL: postgres://tracking:${POSTGRES_PASSWORD}@db:5432/tracking?sslmode=disable
+    volumes:
+      - backup-state:/state
+    tmpfs:
+      - /tmp:mode=1777
+    depends_on:
+      db:
+        condition: service_healthy
 volumes:
   postgres-data:
+  backup-state:
