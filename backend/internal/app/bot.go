@@ -30,6 +30,7 @@ type BotUpdate struct {
 	} `json:"message"`
 }
 type BotError struct {
+	Code       int
 	Permanent  bool
 	RetryAfter time.Duration
 }
@@ -82,7 +83,7 @@ func (b *Bot) request(ctx context.Context, method string, body any, dest any) er
 		if retry > 86400 {
 			retry = 86400
 		}
-		return &BotError{Permanent: code == 400 || code == 401 || code == 403, RetryAfter: time.Duration(retry) * time.Second}
+		return &BotError{Code: code, Permanent: code == 400 || code == 401 || code == 403, RetryAfter: time.Duration(retry) * time.Second}
 	}
 	if dest != nil && json.Unmarshal(envelope.Result, dest) != nil {
 		return &BotError{}

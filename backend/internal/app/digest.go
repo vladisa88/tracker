@@ -111,8 +111,20 @@ func (w *DigestWorker) Cycle(ctx context.Context, now time.Time) error {
 	}
 	sendErr := w.telegram.Send(sendCtx, chat, message)
 	if sendErr != nil {
+		outcome := "unknown"
 		var permanent *BotError
-		if errors.As(sendErr, &permanent) && permanent.Permanent {
+		if errors.As(sendErr, &permanent) {
+			if permanent.Code != 0 {
+				outcome = "temporary_error"
+			}
+			if permanent.Code == 429 {
+				outcome = "rate_limited"
+			}
+			if permanent.Permanent {
+				outcome = "permanent_error"
+			}
+		}
+		if permanent != nil && permanent.Permanent {
 			// Do not overwrite a newer /start check completed during this send.
 			_, err = tx.ExecContext(claimCtx, `UPDATE telegram_connections SET status='error' WHERE owner_id=$1 AND chat_id=$2 AND connection_revision=$3 AND status='connected'`, w.config.OwnerID, recipient, connectionRevision)
 			if err != nil {
@@ -130,9 +142,9 @@ func (w *DigestWorker) Cycle(ctx context.Context, now time.Time) error {
 		if errors.As(sendErr, &failure) && failure.RetryAfter > delay {
 			delay = failure.RetryAfter
 		}
-		_, err = tx.ExecContext(claimCtx, `UPDATE daily_digests SET attempts=attempts+1,next_attempt_at=$2 WHERE business_date=$1`, date, now.Add(time.Since(started)).Add(delay))
+		_, err = tx.ExecContext(claimCtx, `UPDATE daily_digests SET attempts=attempts+1,next_attempt_at=$2,last_result=$3 WHERE business_date=$1`, date, now.Add(time.Since(started)).Add(delay), outcome)
 	} else {
-		_, err = tx.ExecContext(claimCtx, `UPDATE daily_digests SET status='sent',sent_at=$2,next_attempt_at=NULL WHERE business_date=$1`, date, now.Add(time.Since(started)))
+		_, err = tx.ExecContext(claimCtx, `UPDATE daily_digests SET status='sent',sent_at=$2,next_attempt_at=NULL,attempts=attempts+1,last_result='sent' WHERE business_date=$1`, date, now.Add(time.Since(started)))
 	}
 	if err != nil {
 		return err
