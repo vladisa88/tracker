@@ -51,7 +51,11 @@ func (s *Server) metadata(w http.ResponseWriter) {
 // consumers. Forecasts always use the supplied time, even without prior UI reads.
 // Stored dates retain the original schedule; reading never mutates archive or timestamps.
 func (s *Server) ListSubscriptions(ctx context.Context, archived bool, now time.Time) ([]Subscription, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT id,name,amount::text,currency,period_days,to_char(next_payment_date,'YYYY-MM-DD'),archived,created_at,updated_at FROM subscriptions WHERE archived=$1`, archived)
+	return listSubscriptions(ctx, s.db, archived, now)
+}
+
+func listSubscriptions(ctx context.Context, db *sql.DB, archived bool, now time.Time) ([]Subscription, error) {
+	rows, err := db.QueryContext(ctx, `SELECT id,name,amount::text,currency,period_days,to_char(next_payment_date,'YYYY-MM-DD'),archived,created_at,updated_at FROM subscriptions WHERE archived=$1`, archived)
 	if err != nil {
 		return nil, err
 	}

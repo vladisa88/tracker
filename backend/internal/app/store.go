@@ -12,7 +12,10 @@ var schema string
 //go:embed subscriptions.sql
 var subscriptionsSchema string
 
-const schemaVersion = 2
+//go:embed digest.sql
+var digestSchema string
+
+const schemaVersion = 3
 
 func Migrate(ctx context.Context, db *sql.DB) error {
 	tx, err := db.BeginTx(ctx, nil)
@@ -37,6 +40,11 @@ func Migrate(ctx context.Context, db *sql.DB) error {
 	}
 	if version < 2 {
 		if _, err = tx.ExecContext(ctx, subscriptionsSchema); err != nil {
+			return err
+		}
+	}
+	if version < 3 {
+		if _, err = tx.ExecContext(ctx, digestSchema); err != nil {
 			return err
 		}
 	}

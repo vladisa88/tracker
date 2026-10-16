@@ -18,9 +18,8 @@ type Config struct {
 func LoadConfig() (Config, error) {
 	c := Config{Origin: os.Getenv("APP_ORIGIN"), DatabaseURL: os.Getenv("DATABASE_URL"), ClientID: os.Getenv("TELEGRAM_CLIENT_ID"), ClientSecret: os.Getenv("TELEGRAM_CLIENT_SECRET"), StaticDir: os.Getenv("STATIC_DIR")}
 	c.OwnerID, _ = strconv.ParseInt(os.Getenv("OWNER_TELEGRAM_ID"), 10, 64)
-	u, err := url.Parse(c.Origin)
-	if err != nil || u.Host == "" || u.User != nil || u.RawQuery != "" || u.Fragment != "" || u.Path != "" || (u.Scheme != "https" && !(u.Scheme == "http" && (u.Hostname() == "localhost" || u.Hostname() == "127.0.0.1"))) {
-		return c, errors.New("APP_ORIGIN must be an HTTPS origin (HTTP allowed for loopback only)")
+	if err := validateOrigin(c.Origin); err != nil {
+		return c, err
 	}
 	if c.OwnerID <= 0 || strings.TrimSpace(c.ClientID) == "" || strings.TrimSpace(c.ClientSecret) == "" || c.DatabaseURL == "" {
 		return c, errors.New("DATABASE_URL, positive OWNER_TELEGRAM_ID and Telegram client credentials are required")
@@ -43,6 +42,30 @@ func LoadBotConfig() (Config, error) {
 	c.OwnerID, _ = strconv.ParseInt(os.Getenv("OWNER_TELEGRAM_ID"), 10, 64)
 	if c.DatabaseURL == "" || c.OwnerID <= 0 || !botUsernamePattern.MatchString(c.BotUsername) || !botTokenPattern.MatchString(c.BotToken) {
 		return c, errors.New("DATABASE_URL, positive OWNER_TELEGRAM_ID, TELEGRAM_BOT_USERNAME and TELEGRAM_BOT_TOKEN are required")
+	}
+	return c, nil
+}
+
+func validateOrigin(origin string) error {
+	u, err := url.Parse(origin)
+	if err != nil || u.Host == "" || u.User != nil || u.RawQuery != "" || u.ForceQuery || u.Fragment != "" || u.Path != "" || (u.Scheme != "https" && !(u.Scheme == "http" && (u.Hostname() == "localhost" || u.Hostname() == "127.0.0.1"))) {
+		return errors.New("APP_ORIGIN must be an HTTPS origin (HTTP allowed for loopback only)")
+	}
+	return nil
+}
+
+func LoadDigestConfig() (Config, error) {
+	c, err := LoadBotConfig()
+	if err != nil {
+		return c, err
+	}
+	c.Origin = os.Getenv("APP_ORIGIN")
+	if err := validateOrigin(c.Origin); err != nil {
+		return c, err
+	}
+	// Leave ample room for the compact summary within Telegram's text limit.
+	if digestLength(c.Origin) > 2048 {
+		return c, errors.New("APP_ORIGIN must fit within 2048 UTF-16 units")
 	}
 	return c, nil
 }
