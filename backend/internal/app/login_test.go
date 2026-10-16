@@ -233,6 +233,7 @@ func TestBrowserFixture(t *testing.T) {
 	cfg := app.Config{Origin: "http://127.0.0.1:18080", OwnerID: 42, StaticDir: "../../../frontend/dist"}
 	p := &browserProvider{}
 	handler := app.New(db, cfg, p)
+	handler.Now = func() time.Time { return time.Date(2028, 2, 28, 21, 30, 0, 0, time.UTC) }
 	mux := http.NewServeMux()
 	mux.Handle("/", handler)
 	mux.HandleFunc("/test-login", func(w http.ResponseWriter, r *http.Request) {

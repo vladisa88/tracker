@@ -1,6 +1,8 @@
 import { defineConfig, devices } from '@playwright/test';
 export default defineConfig({
   testDir: './e2e',
+  // Scenarios share one owner's database; mutations must not race forecast assertions.
+  workers: 1,
   use: {baseURL: 'http://127.0.0.1:18080'},
   projects: [
     {name: 'desktop', use: {...devices['Desktop Chrome']}},

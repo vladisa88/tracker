@@ -1,4 +1,5 @@
 import React, { useEffect, useRef, useState } from 'react';
+import {ExpenseForecast} from './ExpenseForecast';
 
 /** @typedef {{id:string,name:string,amount:string,currency:string,periodDays:number,nextPaymentDate:string,archived:boolean}} Subscription */
 /** @typedef {{periodDays:number[],currencies:{code:string,fractionDigits:number}[],timezone:string,today:string}} Metadata */
@@ -66,6 +67,7 @@ export function Subscriptions({csrfToken, onExpired}) {
     <div className="list-heading"><div><h1 ref={heading} tabIndex={-1}>Ближайшие платежи</h1><p className="lead">Регулярные расходы в вашем ритме.</p></div>
       <button className="primary" disabled={!meta || open || Boolean(archiving)} onClick={event => openForm('create', null, event.currentTarget)}>Добавить подписку <span aria-hidden="true">＋</span></button></div>
     <p className="schedule-note">Плановые даты переходят автоматически. Они не подтверждают фактическое списание.</p>
+    <ExpenseForecast version={version} onExpired={onExpired}/>
     {open && meta && <SubscriptionForm key={`${mode}-${selected?.id || 'new'}`} meta={meta} item={selected} mode={mode} csrfToken={csrfToken} onExpired={onExpired} onCancel={closeForm} onSaved={() => {setOpen(false); setSuccess(mode === 'create' ? 'Подписка добавлена' : mode === 'restore' ? 'Подписка восстановлена' : 'Изменения сохранены'); if (mode !== 'edit') setState('active'); setVersion(v => v + 1); heading.current?.focus();}}/>}
     {actionError && <p className="error" role="alert">{actionError}</p>}
     {success && <p className="success" role="status">✓ {success}</p>}

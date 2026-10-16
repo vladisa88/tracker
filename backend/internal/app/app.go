@@ -115,6 +115,9 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		case r.URL.Path == "/api/meta" && r.Method == "GET":
 			s.metadata(w)
 			return
+		case r.URL.Path == "/api/summary" && r.Method == "GET":
+			s.summary(w, r)
+			return
 		case r.URL.Path == "/api/subscriptions" && (r.Method == "GET" || r.Method == "POST"):
 			s.subscriptions(w, r)
 			return
