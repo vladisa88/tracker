@@ -118,6 +118,9 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		case r.URL.Path == "/api/subscriptions" && (r.Method == "GET" || r.Method == "POST"):
 			s.subscriptions(w, r)
 			return
+		case strings.HasPrefix(r.URL.Path, "/api/subscriptions/"):
+			s.changeSubscription(w, r)
+			return
 		case r.Method == "GET" && r.URL.Path == "/api/telegram/connection":
 			s.botConnection(w, r)
 			return

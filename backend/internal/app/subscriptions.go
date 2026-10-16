@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"io"
@@ -92,13 +93,7 @@ func (s *Server) subscriptions(w http.ResponseWriter, r *http.Request) {
 		respond(w, 200, items)
 		return
 	}
-	var input struct {
-		Name            string `json:"name"`
-		Amount          string `json:"amount"`
-		Currency        string `json:"currency"`
-		PeriodDays      int    `json:"periodDays"`
-		NextPaymentDate string `json:"nextPaymentDate"`
-	}
+	var input Subscription
 	decoder := json.NewDecoder(http.MaxBytesReader(w, r.Body, 16384))
 	err := decoder.Decode(&input)
 	if err != nil {
@@ -115,6 +110,20 @@ func (s *Server) subscriptions(w http.ResponseWriter, r *http.Request) {
 		fail(w, 400, "invalid_json", "Ожидается один JSON объект")
 		return
 	}
+	if fields := validateSubscription(&input, now, true); len(fields) > 0 {
+		invalid(w, fields)
+		return
+	}
+	sub := Subscription{ID: randomToken(), Name: input.Name, Amount: input.Amount, Currency: input.Currency, PeriodDays: input.PeriodDays, NextPaymentDate: input.NextPaymentDate, CreatedAt: now, UpdatedAt: now}
+	_, err = s.db.ExecContext(r.Context(), `INSERT INTO subscriptions(id,name,amount,currency,period_days,next_payment_date,created_at,updated_at) VALUES($1,$2,$3,$4,$5,$6,$7,$7)`, sub.ID, sub.Name, sub.Amount, sub.Currency, sub.PeriodDays, sub.NextPaymentDate, now)
+	if err != nil {
+		fail(w, 500, "internal", "Не удалось сохранить подписку")
+		return
+	}
+	respond(w, 201, sub)
+}
+
+func validateSubscription(input *Subscription, now time.Time, checkDate bool) map[string]string {
 	fields := map[string]string{}
 	input.Name = strings.TrimSpace(input.Name)
 	if input.Name == "" {
@@ -143,12 +152,11 @@ func (s *Server) subscriptions(w http.ResponseWriter, r *http.Request) {
 		fields["periodDays"] = "Выберите 30, 90, 180 или 365 дней"
 	}
 	date, e := time.Parse("2006-01-02", input.NextPaymentDate)
-	if e != nil || date.Format("2006-01-02") != input.NextPaymentDate || input.NextPaymentDate < schedule.Today(now) {
+	if checkDate && (e != nil || date.Format("2006-01-02") != input.NextPaymentDate || input.NextPaymentDate < schedule.Today(now)) {
 		fields["nextPaymentDate"] = "Укажите сегодняшнюю или будущую дату по Москве"
 	}
 	if len(fields) > 0 {
-		invalid(w, fields)
-		return
+		return fields
 	}
 	// Pad to the currency precision using strings, without binary floating point.
 	amount := strings.TrimLeft(parts[0], "0")
@@ -162,11 +170,131 @@ func (s *Server) subscriptions(w http.ResponseWriter, r *http.Request) {
 		}
 		amount += "." + fraction + strings.Repeat("0", precision-len(fraction))
 	}
-	sub := Subscription{ID: randomToken(), Name: input.Name, Amount: amount, Currency: input.Currency, PeriodDays: input.PeriodDays, NextPaymentDate: input.NextPaymentDate, CreatedAt: now, UpdatedAt: now}
-	_, err = s.db.ExecContext(r.Context(), `INSERT INTO subscriptions(id,name,amount,currency,period_days,next_payment_date,created_at,updated_at) VALUES($1,$2,$3,$4,$5,$6,$7,$7)`, sub.ID, sub.Name, sub.Amount, sub.Currency, sub.PeriodDays, sub.NextPaymentDate, now)
+	input.Amount = amount
+	return nil
+}
+
+func (s *Server) changeSubscription(w http.ResponseWriter, r *http.Request) {
+	parts := strings.Split(strings.TrimPrefix(r.URL.Path, "/api/subscriptions/"), "/")
+	id := parts[0]
+	operation := "edit"
+	if len(parts) == 2 {
+		operation = parts[1]
+	}
+	valid := len(parts) == 1 && r.Method == "PATCH" || len(parts) == 2 && r.Method == "POST" && (operation == "archive" || operation == "restore")
+	if id == "" || !valid {
+		fail(w, 404, "not_found", "Маршрут не найден")
+		return
+	}
+	tx, err := s.db.BeginTx(r.Context(), nil)
 	if err != nil {
 		fail(w, 500, "internal", "Не удалось сохранить подписку")
 		return
 	}
-	respond(w, 201, sub)
+	defer tx.Rollback()
+	var sub Subscription
+	err = tx.QueryRowContext(r.Context(), `SELECT id,name,amount::text,currency,period_days,to_char(next_payment_date,'YYYY-MM-DD'),archived,created_at,updated_at FROM subscriptions WHERE id=$1 FOR UPDATE`, id).Scan(&sub.ID, &sub.Name, &sub.Amount, &sub.Currency, &sub.PeriodDays, &sub.NextPaymentDate, &sub.Archived, &sub.CreatedAt, &sub.UpdatedAt)
+	if errors.Is(err, sql.ErrNoRows) {
+		fail(w, 404, "not_found", "Подписка не найдена")
+		return
+	}
+	if err != nil {
+		fail(w, 500, "internal", "Не удалось загрузить подписку")
+		return
+	}
+	now := s.Now()
+	if operation == "archive" && sub.Archived {
+		respond(w, 200, sub)
+		return
+	}
+	if operation == "restore" && !sub.Archived {
+		fail(w, 409, "conflict", "Подписка уже активна")
+		return
+	}
+	sub.NextPaymentDate = schedule.NextDate(sub.NextPaymentDate, sub.PeriodDays, sub.Archived, now)
+	if operation == "archive" {
+		sub.Archived = true
+	} else {
+		allowed := []string{"name", "amount", "currency", "periodDays", "nextPaymentDate"}
+		if operation == "restore" {
+			allowed = []string{"nextPaymentDate"}
+		}
+		fields, ok := subscriptionFields(w, r, allowed)
+		if !ok {
+			return
+		}
+		if operation == "restore" && fields["nextPaymentDate"] == nil {
+			invalid(w, map[string]string{"nextPaymentDate": "Укажите новую дату платежа"})
+			return
+		}
+		body, _ := json.Marshal(fields)
+		if err := json.Unmarshal(body, &sub); err != nil {
+			var mismatch *json.UnmarshalTypeError
+			if errors.As(err, &mismatch) {
+				invalid(w, map[string]string{mismatch.Field: "Неверный тип значения"})
+			} else {
+				fail(w, 400, "invalid_json", "Некорректный JSON")
+			}
+			return
+		}
+		if invalidFields := validateSubscription(&sub, now, fields["nextPaymentDate"] != nil || !sub.Archived); len(invalidFields) > 0 {
+			invalid(w, invalidFields)
+			return
+		}
+		if operation == "restore" {
+			sub.Archived = false
+		}
+	}
+	sub.UpdatedAt = now
+	_, err = tx.ExecContext(r.Context(), `UPDATE subscriptions SET name=$2,amount=$3,currency=$4,period_days=$5,next_payment_date=$6,updated_at=$7,archived=$8 WHERE id=$1`, sub.ID, sub.Name, sub.Amount, sub.Currency, sub.PeriodDays, sub.NextPaymentDate, now, sub.Archived)
+	if err == nil {
+		err = tx.Commit()
+	}
+	if err != nil {
+		fail(w, 500, "internal", "Не удалось сохранить подписку")
+		return
+	}
+	respond(w, 200, sub)
+}
+
+func subscriptionFields(w http.ResponseWriter, r *http.Request, allowed []string) (map[string]json.RawMessage, bool) {
+	var fields map[string]json.RawMessage
+	decoder := json.NewDecoder(http.MaxBytesReader(w, r.Body, 16384))
+	if err := decoder.Decode(&fields); err != nil {
+		var mismatch *json.UnmarshalTypeError
+		if errors.As(err, &mismatch) {
+			invalid(w, map[string]string{"form": "Ожидается JSON объект"})
+		} else {
+			fail(w, 400, "invalid_json", "Некорректный JSON")
+		}
+		return nil, false
+	}
+	var extra any
+	if decoder.Decode(&extra) != io.EOF {
+		fail(w, 400, "invalid_json", "Ожидается один JSON объект")
+		return nil, false
+	}
+	invalidFields := map[string]string{}
+	for field, value := range fields {
+		permitted := false
+		for _, name := range allowed {
+			if name == field {
+				permitted = true
+				break
+			}
+		}
+		if !permitted {
+			invalidFields[field] = "Недопустимое поле"
+		} else if string(value) == "null" {
+			invalidFields[field] = "Укажите значение"
+		}
+	}
+	if len(fields) == 0 {
+		invalidFields["nextPaymentDate"] = "Укажите поля подписки и новую дату для восстановления"
+	}
+	if len(invalidFields) > 0 {
+		invalid(w, invalidFields)
+		return nil, false
+	}
+	return fields, true
 }
