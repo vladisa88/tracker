@@ -127,6 +127,15 @@ func (b *BotWorker) Poll(ctx context.Context) error {
 	}
 	updates, err := b.telegram.Updates(ctx, offset)
 	if err != nil {
+		var failure *BotError
+		if errors.As(err, &failure) && failure.Permanent {
+			if _, saveErr := tx.ExecContext(ctx, `UPDATE telegram_connections SET status='error' WHERE owner_id=$1`, b.config.OwnerID); saveErr != nil {
+				return saveErr
+			}
+			if saveErr := tx.Commit(); saveErr != nil {
+				return saveErr
+			}
+		}
 		return err
 	}
 	for _, u := range updates {

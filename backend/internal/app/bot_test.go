@@ -91,11 +91,12 @@ func TestBotConnectsOwnerAndResumes(t *testing.T) {
 }
 
 type botFixture struct {
-	t          *testing.T
-	update     string
-	offset     int64
-	recipients []int64
-	failure    int
+	t           *testing.T
+	update      string
+	offset      int64
+	recipients  []int64
+	failure     int
+	pollFailure int
 }
 
 func (f *botFixture) transport(r *http.Request) (*http.Response, error) {
@@ -115,6 +116,9 @@ func (f *botFixture) transport(r *http.Request) (*http.Response, error) {
 			f.t.Fatalf("poll options: %+v", body)
 		}
 		f.offset = body.Offset
+		if f.pollFailure != 0 {
+			return &http.Response{StatusCode: f.pollFailure, Body: io.NopCloser(strings.NewReader(fmt.Sprintf(`{"ok":false,"error_code":%d}`, f.pollFailure))), Header: make(http.Header)}, nil
+		}
 		result = `{"ok":true,"result":[` + f.update + `]}`
 	} else if strings.HasSuffix(r.URL.Path, "/sendMessage") {
 		var body struct {
@@ -236,6 +240,17 @@ func TestBotRejectsOtherSendersAndReportsDeliveryFailure(t *testing.T) {
 	if len(f.recipients) != 3 || f.recipients[2] != 777006 {
 		t.Fatalf("retry delivery: %v", f.recipients)
 	}
+	f.pollFailure = 401
+	err = worker.Poll(context.Background())
+	if !errors.As(err, &failure) || !failure.Permanent {
+		t.Fatalf("permanent polling failure: %v", err)
+	}
+	state("error")
+	worker = app.NewBotWorker(testDB(t), cfg, telegram)
+	f.pollFailure = 0
+	update(11, cfg.OwnerID, 777006, "private", "/start")
+	poll()
+	state("connected")
 }
 
 type fixedBotLogin struct{ id int64 }
